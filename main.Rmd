@@ -1,0 +1,476 @@
+---
+title: "EDA of Google Play Store"
+author: "Shivam Saini"
+output: html_document
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+
+---
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(gridExtra)
+```
+
+Note: The data set contains a sample of around 10K apps scraped from Google Play Store. 
+Original source: https://www.kaggle.com/lava18/google-play-store-apps
+
+
+
+Let's load the data set
+
+```{r}
+gplay<- read_csv("googleplaystore.csv")
+
+dim(gplay)
+head(gplay)
+
+```
+* There are 10841 apps in this sample of Play Store Apps.
+
+* The values in column "Installs", "Price" and "Size" are stored as character and need to be changed to numeric.
+
+* "Current Ver" column contains "Varies with device".
+
+* "Last Updated" needs to be changed to Date type.
+
+* "Category", "Content Rating" and "Type" should be stored as factors.
+
+
+```{r}
+summary(gplay)
+```
+
+
+* Multiple NAs are present in "Rating" and "Reviews" columns.
+*"Rating" column has max. value 19 which can't be possible as Google Play store rates app on a 0-5 scale.
+
+```{r}
+cat('no. of duplicated rows: ',sum(duplicated(gplay$App)))
+```
+
+```{r}
+#remove duplicates
+gplay<- distinct(gplay)
+gplay<- gplay[-c(which(duplicated(gplay$App))),]
+
+#convert variable names to lower case and remove spaces
+names(gplay) <- tolower(names(gplay))
+names(gplay) <- str_replace_all(names(gplay), pattern= " ", replacement = "_")
+
+#correct rating column
+gplay$rating<- ifelse(gplay$rating<=5, gplay$rating, NA)
+
+#converting categories to factor
+gplay$category <- as.factor(gplay$category)
+gplay$content_rating<- as.factor(gplay$content_rating)
+```
+
+
+```{r}
+unique(gplay$type)
+```
+
+```{r}
+gplay[gplay$type %in% c('NaN', '0'), ]
+```
+
+both these rows have multiple missing values so i am dropping these rows.
+
+```{r}
+gplay<- gplay[!gplay$type %in% c('NaN', '0'), ]
+
+#change type to factor
+gplay$type <- as.factor(gplay$type)
+
+#formatting dates
+gplay$last_updated <- mdy(gplay$last_updated)
+
+#removing version and genre.
+gplay$current_ver <- NULL
+gplay$genres<- NULL
+```
+
+```{r}
+#converting size, installs and price to numbers
+gplay$installs<- parse_number(gplay$installs)
+gplay$size<- parse_number(gplay$size)
+gplay$price<- parse_number(gplay$price)
+```
+
+```{r}
+unique(gplay$android_ver)
+gplay[gplay$android_ver %in% c('Varies with device', 'NaN'), "android_ver"] <- NA
+```
+
+```{r}
+summary(gplay)
+```
+
+There are many NA values in data set.
+
+```{r}
+is.na(gplay) %>% 
+    as_tibble %>%
+    mutate(index = row_number()) %>%
+    gather(key= variable, value = is_na , 1:11) %>%
+    ggplot() +
+    geom_tile(aes(x= variable, y= index, fill=is_na)) +
+    theme_minimal() +
+    theme(axis.text.x= element_text(angle=45, vjust = 0.8)) +
+    scale_y_reverse() +
+    labs('Missing values by position') 
+```
+
+I am going to remove the android version column because it has many NA values and is already very poorly defined.
+
+```{r}
+#remove android version
+gplay$android_ver<- NULL
+```
+
+For rating and size I will use the average rating and size of the category to fill missing values.
+
+```{r}
+avg_by_cat<- gplay %>% 
+                select(rating, size, category) %>% 
+                group_by(category) %>%
+                summarise( avg_rating=mean(rating, na.rm= TRUE) , avg_size= mean(size, na.rm= TRUE))
+avg_by_cat
+```
+
+```{r}
+for(i in 1: nrow(avg_by_cat) ) {
+    gplay[is.na(gplay$rating) & (gplay$category %in% avg_by_cat$category[i]), "rating"]<- avg_by_cat[i,2]
+}
+
+for(i in 1: nrow(avg_by_cat) ) {
+    gplay[is.na(gplay$size) & (gplay$category %in% avg_by_cat$category[i]), "size"]<- avg_by_cat[i,3]
+}
+```
+
+
+```{r}
+summary(gplay)
+```
+
+## VISUALISATIONS
+
+```{r}
+gplay %>% 
+    select(size, type) %>%
+    ggplot() +
+    geom_boxplot(aes(x =type, size, fill = type), show.legend = F) +
+    scale_y_continuous(trans= 'log10') + 
+    labs(y='size M(log scale)', title= 'Distribution of Free v/s Paid apps')
+
+```
+
+* Free and paid both applications have similar sized distributions. However, there are more free apps of extremely large size than paid apps.
+
+```{r}
+num_apps<- gplay%>% 
+    select(type) %>%
+    group_by(type) %>%
+    summarise(n_apps= n())
+
+ggplot(num_apps) +
+    geom_bar(stat='identity', aes(y= n_apps, x= type, fill = type), show.legend=F) +
+    geom_text(aes(y= n_apps+ 200, x= type, label= n_apps))  + 
+    labs(title='Count of Free v/s paid apps')
+
+
+```
+
+
+
+* There are more free apps on Google Play Store than Paid apps.
+
+Let's see how many apps are there on Play Store in each category.
+
+```{r}
+gplay %>% 
+ select(category) %>%
+ group_by(category) %>%
+      summarise(app_num = n()) %>% 
+ ggplot() + geom_bar(stat ='identity' , aes(y = app_num, x = reorder(category, app_num)), fill = 'skyblue') + 
+ coord_flip() + theme(legend.position = 'none') + labs(x= 'category',y= 'number of apps') + theme_linedraw() +
+labs(title= 'No. of apps (category-wise)')
+```
+
+
+* Family apps leads the list with more than 1500 apps.
+* The proportion of Games, tools, and family apps is much more than any other category.
+
+Let's see how apps compare by price.
+
+```{r}
+gplay %>% 
+ select(category, type) %>%
+ group_by(category, type) %>%
+ summarise(app_num = n())  %>% 
+ spread(type, app_num, fill =0) %>%
+ mutate(paid_prop= Paid/Free, 
+       free_prop =1-paid_prop) %>%
+ select(-Free, -Paid)%>% 
+ gather(type, prop, 2,3) %>%
+ ggplot() + geom_bar(stat='identity', aes(y= prop, x= category, fill= type) ,alpha =0.7) + coord_flip()  +
+ theme_linedraw() +
+ labs(title ='Proportion of paid and free apps (Category-wise)')
+
+```
+
+
+
+* Only Personalization and Medical categories have more than 25% of paid apps in their respective categories indicating users are more likely to pay for medical apps and themes, icons etc.
+
+* Categories Comic, Beauty, House and Home, Social, and Shopping have very few paid apps.
+```{r}
+p1<- gplay %>% 
+    select(type, rating) %>%
+    ggplot() + 
+    geom_histogram(aes(rating), binwidth =0.1)  + 
+    ggtitle("Distribution of app ratings") +theme_linedraw()
+
+p2<- gplay %>% 
+    select(type, rating) %>%
+    ggplot() +
+     geom_jitter(aes(x= type , y= rating), alpha =0.2)+
+    geom_boxplot(aes(x = type , y= rating, fill = type), show.legend= F, outlier.shape=NA) +
+    ggtitle("App ratings according to their types") + theme_linedraw()
+ 
+grid.arrange(p1, p2, ncol = 2)
+```
+
+
+
+* The distribution of app rating is left skewed implying most of the apps provide satisfactory experience to users.
+
+* Paid apps have higher ratings compared to Free apps.
+
+```{r, fig.width=12}
+p3<- gplay %>% 
+    select(category, rating) %>%
+    group_by(category) %>%
+    summarise(average_rating= mean(rating)) %>% 
+    ggplot() + 
+    geom_bar(stat= 'identity', aes(x= category, y= average_rating, fill =average_rating<=4),show.legend= F) +
+    coord_flip() +theme_linedraw() + labs(title='Category-wise Avg Rating')
+p4<- gplay%>% 
+    select(content_rating, rating) %>%
+    group_by(content_rating) %>%
+    summarise(average_rating= mean(rating)) %>% 
+    ggplot() + 
+    geom_bar(stat= 'identity', aes(x= content_rating, y= average_rating, fill =average_rating<=4),show.legend= F) +
+    coord_flip() +theme_linedraw() + labs(title= 'Avg rating according to content rating')
+
+grid.arrange(p3, p4, ncol = 2)
+```
+
+* All of the categories except Dating have average rating over 4. 
+
+```{r}
+gplay %>% 
+ select(category, rating) %>%
+ mutate(disappointing = rating<3) %>% 
+ group_by(category) %>% 
+ summarise(total_num = n(), num_dis = sum(disappointing)) %>% 
+ mutate(prop_dis= num_dis/total_num) %>% 
+ select(category, prop_dis) %>%
+ ggplot() + 
+ geom_bar(stat='identity', aes(x= reorder(category, prop_dis), y= prop_dis, fill = prop_dis), show.legend=F) +
+ coord_flip()+ theme_linedraw()+ theme(axis.text.y = element_text(size= 8))+ 
+ labs(title = 'Most disappointing app Categories', subtitle='proportion of apps having rating less than 3', 
+           x= 'category', y= 'proportion')
+
+```
+
+
+
+* Here I've chosen the number of apps having rating less than 3 as disappointing apps.
+
+The representation of categories of app is not similar and hence it is not right to compare the categories based on the absolute number of disappointing apps. I've decided to use the category-wise proportion of disappointing apps to compare the categories.
+
+* All the categories have less than ten percent of disappointing apps.
+* Interestingly, the category Health and Fitness is most disappointing possibly because users generally have higher expectations from these kind of apps and nonfullfillment of those expectations leads to disappointment and lower reviews.
+
+```{r}
+gplay %>% 
+    select(content_rating) %>% 
+    group_by(content_rating) %>%
+    summarise(number_of_apps = n()) %>%
+    ggplot()+
+    geom_bar(stat= 'identity',aes(x= reorder(content_rating, number_of_apps), y= number_of_apps), fill= 'orange') +
+    labs(title= 'Number of Apps v/s content rating', x= 'content rating' , y= 'number of apps') +theme_bw()
+
+```
+
+
+
+
+* Most of the apps are focused toward the audience of all the ages, in line with our previous result which showed the family apps are the leading category of apps on play store.
+
+* Teen apps takes the second position, most probably these are gaming and social media applications.
+
+```{r, fig.height=12}
+gplay %>% 
+    select(category, content_rating) %>%
+    group_by(content_rating, category) %>%
+    summarise( num_apps = n()) %>% 
+    ggplot() + 
+    geom_bar(stat= 'identity', aes(x= category, y= num_apps, fill = category), show.legend= F) +
+    coord_flip() +
+    facet_wrap(~content_rating) +
+    labs(title='Number of apps by Content Rating and Category')
+```
+
+
+
+
+* As expected, most of the apps rated Everyone are family apps and tools. Similar trend can be seen in 10+ rated apps.
+
+* Games, Family and Social media apps constitute a majority of teen apps. This indicates most of the social media apps and games are intended for Teenage users.
+
+* Dating apps lead the Mature category.
+
+
+```{r}
+gplay %>% 
+ select(content_rating, rating) %>%
+ mutate(disappointing = rating<3) %>% 
+ group_by(content_rating) %>% 
+ summarise(total_num = n(), num_dis = sum(disappointing)) %>% 
+ mutate(prop_dis= num_dis/total_num) %>% 
+ select(content_rating, prop_dis) %>%
+ ggplot() + 
+ geom_bar(stat='identity', aes(x= reorder(content_rating, prop_dis), y= prop_dis, fill = prop_dis), show.legend=F) + 
+ coord_flip()+ theme_linedraw()+
+ labs(title = 'Most disappointing app types by Content rating', subtitle='proportion of apps having rating less than 3', 
+           x= 'content rating', y= 'proportion')
+```
+
+
+
+* Apps rated for mature users are 2nd most disappointing app types.
+
+```{r}
+gplay %>% 
+ select(category, reviews) %>%
+ group_by(category) %>%
+ summarise(review_num = sum(reviews)) %>% 
+ top_n(5, review_num ) %>%
+ ggplot() +
+ geom_bar(stat ='identity' , aes(y = review_num, x = reorder(category, review_num)), fill = 'skyblue') + 
+ coord_flip() +
+ theme(legend.position = 'none') + 
+ labs(title='5 Most Reviewed app Categories',x= 'category',y= 'number of reviews') + theme_linedraw()
+```
+
+
+* Users tend to review Gaming apps more than any other category. These apps are intended for teen population and teens are more likely to rate and review apps.
+
+```{r}
+
+ p5<- gplay %>%
+    select(installs) %>%
+    mutate(installs= as.factor(installs)) %>%
+    group_by(installs) %>%
+    summarise(n= n()) %>%
+    ggplot()+
+    geom_bar(stat='identity',aes(x=installs , y=n), fill = 'skyblue')  + theme_bw() +
+    coord_flip() +
+    labs(title='Distribution of installs', x= 'installs')
+
+p6<- gplay %>%
+    select(installs, category) %>%
+    group_by(category) %>%
+    summarise(installs = sum(installs)) %>%
+    top_n(5, installs) %>%
+    ggplot() +
+    geom_bar(stat= 'identity', aes(x= reorder(category, installs), y= installs), fill ='orange', width =0.5) + coord_flip()+
+    theme_bw() +
+    labs(title='Most Installed app category', x= 'category'  )
+
+grid.arrange(p5, p6, ncol=2)
+```
+ 
+
+ 
+
+* Game and Communication apps are the most downloaded app categories.
+
+
+```{r}
+p7<- gplay %>%
+    select(price) %>%
+    filter(price !=0) %>%
+    ggplot()+
+    geom_histogram(aes(x=price))+scale_x_log10() +theme_linedraw() +
+    labs(title='Distribution of price(paid apps)', x= 'price(log scale)')
+
+p8<- gplay %>% 
+    select(price, category) %>% 
+    group_by(category) %>% 
+    summarise(price = mean(price)) %>%
+    top_n(5, price) %>%
+    ggplot() + 
+    geom_bar(stat= 'identity', aes(x= reorder(category, price), y= price), fill ='orange', width =0.5) + coord_flip()+
+    theme_bw() + 
+    labs(title='Avg price by category', x= 'category'  )
+grid.arrange(p7, p8, ncol=2)
+```
+
+
+
+* Most of the paid apps on Play Store cost less than $10.
+
+* Finance apps have higher average price than other apps.
+
+
+```{r}
+gplay %>% 
+    select(last_updated) %>%
+    group_by(year=year(last_updated)) %>%
+    summarise(num_app= n()) %>%
+    ggplot()+
+    geom_bar(stat='identity', aes(x= year, y = num_app ,fill = year), show.legend=F) +theme_linedraw() +
+    labs(title= 'Number of apps v/s Year of Last Update')
+```
+
+* Most of the apps were updated in the year 2018.
+
+
+```{r}
+first_char<-str_sub(gplay$app, start=1, end = 1)
+
+first_char<- as.factor(tolower(first_char) ) %>%
+    tibble(char=.)
+
+first_char %>%
+  group_by(char) %>%
+  summarise(count= n()) %>%
+  arrange(desc(count)) %>% top_n(5) %>%
+  ggplot() +
+  geom_bar(stat='identity', aes(x= reorder(char, -count), y= count), fill ='skyblue') +theme_linedraw() +
+  labs(title= 'Number of apps by first character (Top 5)', x= 'first character')
+
+```
+
+* The top 4 characters are the first 4 alphabets. App developers generally, try to name their apps in this way to make their app appear higher on the list when sorted by alphabetical order.  
+
+We began with cleaning the data, and then collected multiple insights about data like most disappointing apps, most downloaded categories, teen's choice and more while exploring the data. Let's end this by listing the 5 most popular apps.
+
+```{r}
+gplay %>% 
+  filter(installs>=1e09) %>%
+  select(app, category, reviews, type, content_rating) %>%
+  arrange(desc(reviews)) %>%
+  top_n(n = 5, reviews)
+
+```
+* Interestingly 4 out of these 5 apps are owned by Facebook Inc.
+
